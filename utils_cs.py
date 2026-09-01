@@ -1,21 +1,27 @@
-import os
+"""Deprecated. Use config.CryoSPARCConnectionConfig instead.
+
+Kept only for backward compatibility with any external code that still
+imports load_env_variables / initialize_cryosparc from here.
+"""
+
+from __future__ import annotations
 
 from cryosparc.tools import CryoSPARC
-from dotenv import load_dotenv
+
+from config import CryoSPARCConnectionConfig
 
 
 def load_env_variables(env_file):
-    load_dotenv(env_file)
+    values = CryoSPARCConnectionConfig(env_file=env_file).load()
     return {
-        "license_id": os.getenv("CRYOSPARC_LICENSE_ID"),
-        "email": os.getenv("CRYOSPARC_EMAIL"),
-        "password": os.getenv("CRYOSPARC_PASSWORD"),
-        "host": os.getenv("CRYOSPARC_HOST"),
-        "port": int(os.getenv("CRYOSPARC_PORT")),
+        "license_id": values["CRYOSPARC_LICENSE_ID"],
+        "email": values["CRYOSPARC_EMAIL"],
+        "password": values["CRYOSPARC_PASSWORD"],
+        "host": values["CRYOSPARC_HOST"],
+        "port": int(values["CRYOSPARC_PORT"]),
     }
 
 
-# Initialize CryoSPARC connection
 def initialize_cryosparc(env_vars):
     return CryoSPARC(
         host=env_vars["host"],

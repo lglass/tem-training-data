@@ -1,0 +1,26 @@
+# Single-run config for input_generator.py:
+#   python input_generator.py --config configs/example_run.yaml
+
+microscope: titan  # see microscopes.yaml; or inline/override, e.g.:
+                      # microscope: {preset: titan, optics: {cs: 2.0}}
+
+sample:
+  diameter: 910.0
+  thickness_center: 80.0
+  thickness_edge: 85.0
+
+mixture:
+  name: example_mixture
+  species:
+    - name: 4AAR
+      source: map          # looks for structures/4AAR_map.mrc unless `path:` is given
+      concentration: 400
+    - name: 6PXM
+      source: pdb          # looks for structures/6PXM.pdb unless `path:` is given
+      concentration: 400
+  noise:
+    enabled: true
+
+dose: 30.0        # e/A^2
+defocus: 1.0       # micrometers
+output_dir: data

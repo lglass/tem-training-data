@@ -1,0 +1,63 @@
+# Microscope + detector presets, keyed by name. Referenced from a run config
+# either as a bare name (`microscope: glacios`) or with overrides
+# (`microscope: {preset: glacios, optics: {cs: 2.0}}`).
+#
+# To add a new instrument, copy a preset below and adjust electronbeam /
+# optics / detector. All three sections are required; every field maps
+# directly onto a TEM-simulator input-file parameter of the same name.
+
+glacios:
+  electronbeam:
+    acc_voltage: 200
+    energy_spread: 0.3
+    gen_dose: "yes"
+  optics:
+    magnification: 89297.1
+    cs: 2.7
+    cc: 2.7
+    aperture: 100
+    focal_length: 3.4
+    cond_ap_angle: 0.05
+    gen_defocus: "yes"
+  detector:
+    det_pix_x: 4096
+    det_pix_y: 4096
+    pixel_size: 14
+    gain: 1
+    use_quantization: "yes"
+    dqe: 0.5
+    mtf_a: 0.7
+    mtf_b: 0.3
+    mtf_c: 0.0
+    mtf_alpha: 1
+    mtf_beta: 10
+    mtf_p: 1
+    mtf_q: 1
+
+titan:
+  electronbeam:
+    acc_voltage: 300
+    energy_spread: 0.3
+    gen_dose: "yes"
+  optics:
+    magnification: 191000
+    cs: 2.7
+    cc: 2.7
+    aperture: 150
+    focal_length: 3.4
+    cond_ap_angle: 0.05
+    gen_defocus: "yes"
+  detector:
+    det_pix_x: 4096
+    det_pix_y: 4096
+    pixel_size: 14
+    gain: 1
+    use_quantization: "yes"
+    dqe: 0.9
+    mtf_a: 0.7
+    mtf_b: 0.3
+    mtf_c: 0.0
+    mtf_alpha: 1
+    mtf_beta: 10
+    mtf_p: 1
+    mtf_q: 1

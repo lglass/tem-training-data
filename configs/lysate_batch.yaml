@@ -1,0 +1,54 @@
+# Batch config for run_sim_parallel.py:
+#   python run_sim_parallel.py --config configs/lysate_batch.yaml
+#
+# Runs num_micrographs x len(dose_values) simulations in parallel, then (since
+# a `cryosparc:` section is present) imports the results into CryoSPARC.
+# Pass --skip-cryosparc to run the simulations only.
+
+microscope: glacios
+
+sample:
+  diameter: 910.0
+  thickness_center: 80.0
+  thickness_edge: 85.0
+
+mixture:
+  name: lysate_mixture
+  species:
+    - {name: 7Q5Q,       source: map, concentration: 768}
+    - {name: 7Q5R,       source: map, concentration: 768}
+    - {name: 7Q5S,       source: map, concentration: 768}
+    - {name: 3JCT,       source: map, concentration: 256}
+    - {name: 6ELZ,       source: map, concentration: 256}
+    - {name: 6EM5,       source: map, concentration: 256}
+    - {name: 1WCM,       source: map, concentration: 90}
+    - {name: 4CR2,       source: map, concentration: 90}
+    - {name: 4V88_copy1, source: map, concentration: 90}
+    - {name: 5np0,       source: map, concentration: 90}
+    - {name: 9pmo,       source: map, concentration: 90}
+  noise:
+    enabled: true
+
+dose_values: [30]
+num_micrographs: 1500
+
+defocus:
+  type: npy            # also supports: {type: range, min: 0.5, max: 3.0}
+  path: defocus.npy    #            or: {type: list, values: [0.8, 1.2, 1.6]}
+
+seed: null              # set an integer for reproducible defocus sampling
+max_workers: 8
+
+output_dir: /mnt/data/lysate/simulated_20260901
+input_dir: input_files
+mrc_dirs_file: mrc_dirs.txt
+
+cryosparc:
+  project: P8
+  workspace: W2
+  lane: default
+  dose_fallback: 30.0
+  particle_diameters_A: [130, 270]
+  box_size_pix: 384
+  connection:
+    env_file: /home/lara/.env

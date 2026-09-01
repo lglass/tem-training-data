@@ -1,65 +1,33 @@
+"""Import simulated micrographs into CryoSPARC and run the standard
+import -> CTF -> curate -> topaz pipeline.
+
+Callable two ways:
+  - standalone: `python cryosparc_run.py --config configs/cryosparc.yaml`
+  - chained from run_sim_parallel.py, which calls run_import() directly with
+    the mrc directories and dose map it just produced.
+
+Connection credentials are never stored in the YAML config: they are loaded
+from an env file (see config.CryoSPARCConnectionConfig) at the path the
+config points to.
+"""
+
+from __future__ import annotations
+
 import argparse
 import json
-import os
 import re
-from datetime import datetime
 from pathlib import Path
+from typing import Sequence
 
+import yaml
 from cryosparc.tools import CryoSPARC
 from cryosparc.util import first
-from dotenv import load_dotenv
 
-experiments_dir = Path("/mnt/data/lysate/")
-
-load_dotenv(".env")
-CRYOSPARC_LICENSE_ID = os.getenv("CRYOSPARC_LICENSE_ID")
-CRYOSPARC_EMAIL = os.getenv("CRYOSPARC_EMAIL")
-CRYOSPARC_PASSWORD = os.getenv("CRYOSPARC_PASSWORD")
-CRYOSPARC_HOST = os.getenv("CRYOSPARC_HOST")
-CRYOSPARC_PORT = int(os.getenv("CRYOSPARC_PORT"))
-
-PROJECT = "P8"
-WORKSPACE = "W2"
-
-cs = CryoSPARC(
-    host=CRYOSPARC_HOST,
-    base_port=CRYOSPARC_PORT,
-    license=CRYOSPARC_LICENSE_ID,
-    email=CRYOSPARC_EMAIL,
-    password=CRYOSPARC_PASSWORD,
-)
-
-assert cs.test_connection()
-
-project = cs.find_project(PROJECT)
-workspace = project.find_workspace(WORKSPACE)
-lane = "default"
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Run CryoSPARC micrograph import and refinement pipeline."
-    )
-    parser.add_argument(
-        "--dose",
-        type=float,
-        default=30.0,
-        help="Fallback total electron dose in e/A^2 used for micrograph import.",
-    )
-    parser.add_argument(
-        "--mrc-dirs-file",
-        default="mrc_dirs.txt",
-        help="Path to file containing one micrograph directory per line.",
-    )
-    parser.add_argument(
-        "--mrc-dose-map",
-        default="mrc_dirs_dose_map.json",
-        help="Optional JSON file mapping directory paths to dose values.",
-    )
-    return parser.parse_args()
+from config import CryoSPARCImportConfig, MicroscopeConfig, resolve_microscope_spec
 
 
 def resolve_dose_from_dir(data_dir: Path) -> float | None:
-    """Extract dose from directory name like dose_45.0."""
+    """Extract dose from a directory name like dose_45.0 (fallback only)."""
     match = re.search(r"dose_(-?\d+(?:\.\d+)?)", data_dir.as_posix())
     if not match:
         return None
@@ -69,186 +37,155 @@ def resolve_dose_from_dir(data_dir: Path) -> float | None:
         return None
 
 
-args = parse_args()
+def run_import(
+    cfg: CryoSPARCImportConfig,
+    microscope: MicroscopeConfig | None,
+    mrc_dirs: Sequence[Path],
+    dose_map: dict[str, float],
+) -> None:
+    if microscope is not None:
+        cfg = cfg.with_microscope_derived_fields(microscope)
 
-log_file_path = datetime.now().strftime("cs_run_%Y-%m-%d %H:%M.txt")
+    missing = [f for f in ("pixel_size_A", "accel_kv", "cs_mm") if getattr(cfg, f) is None]
+    if missing:
+        raise ValueError(
+            f"cryosparc config is missing {missing}; either provide a `microscope:` "
+            "to derive them from, or set them explicitly."
+        )
 
-with open(args.mrc_dirs_file, "r") as f:
-    data_dirs = f.read().splitlines()
+    creds = cfg.connection.load()
+    cs = CryoSPARC(
+        host=creds["CRYOSPARC_HOST"],
+        base_port=int(creds["CRYOSPARC_PORT"]),
+        license=creds["CRYOSPARC_LICENSE_ID"],
+        email=creds["CRYOSPARC_EMAIL"],
+        password=creds["CRYOSPARC_PASSWORD"],
+    )
+    if not cs.test_connection():
+        raise RuntimeError("Could not connect to CryoSPARC")
 
-dose_map: dict[str, float] = {}
-map_path = Path(args.mrc_dose_map)
-if map_path.exists():
-    with open(map_path, "r") as f:
-        raw_map = json.load(f)
-    for key, value in raw_map.items():
-        try:
-            dose_map[str(Path(key))] = float(value)
-        except (TypeError, ValueError):
+    project = cs.find_project(cfg.project)
+    workspace = project.find_workspace(cfg.workspace)
+
+    for data_dir in mrc_dirs:
+        data_dir = Path(data_dir)
+
+        blob_pattern = (data_dir / "*.mrc").as_posix()
+        if not any(data_dir.glob("*.mrc")):
+            print(f"Skipping empty directory: {data_dir}")
             continue
 
-for data_dir in data_dirs:
-    data_dir = Path(data_dir)
+        resolved_dose = dose_map.get(str(data_dir))
+        if resolved_dose is None:
+            resolved_dose = resolve_dose_from_dir(data_dir)
+        if resolved_dose is None:
+            resolved_dose = cfg.dose_fallback
+            print(
+                "WARNING: Could not resolve dose from map/path "
+                f"for {data_dir}. Falling back to dose_fallback={cfg.dose_fallback}."
+            )
 
-    blob_pattern = (data_dir / "*.mrc").as_posix()
-    has_micrographs = any(data_dir.glob("*.mrc"))
-    if not has_micrographs:
-        print(f"Skipping empty directory: {data_dir}")
-        continue
-
-    resolved_dose = dose_map.get(str(data_dir))
-    if resolved_dose is None:
-        resolved_dose = resolve_dose_from_dir(data_dir)
-    if resolved_dose is None:
-        resolved_dose = args.dose
-        print(
-            "WARNING: Could not resolve dose from map/path "
-            f"for {data_dir}. Falling back to --dose={args.dose}."
-        )
-
-    import_micrographs_job = workspace.create_job(
-        "import_micrographs",
-        params={
-            "blob_paths": blob_pattern,
-            "psize_A": 1.5678,
-            "accel_kv": 200,
-            "cs_mm": 2.7,
-            "total_dose_e_per_A2": resolved_dose,
-        },
-    )
-
-    import_micrographs_job.queue(lane)
-
-    ###
-    ctf_estimation_job = workspace.create_job(
-        "ctf_estimation",
-        connections={"exposures": (import_micrographs_job.uid, "imported_micrographs")},
-        params={
-            "astigmatism_known": True,
-            "spectrum_dim": 1024,
-            "min_res_A": 30,
-            "max_res_A": 5,
-            "min_df_A": 10000,
-            "max_df_A": 40000,
-            "step_df_A": 100,
-            "known_astigmatism_A": 0,
-            "slow": False,
-        },
-    )
-
-    ctf_estimation_job.queue(lane)
-
-    ###
-    curate_exposures_job = workspace.create_job(
-        "curate_exposures_v2",
-        connections={"exposures": (ctf_estimation_job.uid, "exposures_success")},
-    )
-
-    curate_exposures_job.queue()
-    curate_exposures_job.wait_for_status("waiting")
-
-    data = curate_exposures_job.interact("get_fields_and_thresholds")
-
-    idx_field = first(
-        field for field in data["fields"] if field["name"] == "ctf_fit_to_A"
-    )
-    assert idx_field
-    idx_field["thresholds"] = [0, 16]
-    idx_field["active"] = True
-
-    curate_exposures_job.interact("set_thresholds", data)
-    curate_exposures_job.interact("shutdown_interactive")
-
-    ###
-    particle_diameters = [130, 270]  # in Angstroms
-
-    topaz_job_ids = []
-    # For one particle diameter, we can directly extract particles. For multiple diameters, we first merge the particles from different diameters and then extract them together, dropping duplicate particles.
-    if len(particle_diameters) == 1:
-        topaz_job = workspace.create_job(
-            "topaz_extract",
-            connections={"micrographs": (curate_exposures_job.uid, "exposures_accepted")},
+        import_micrographs_job = workspace.create_job(
+            "import_micrographs",
             params={
-                "exec_path": "/home/cryosparcuser/topaz.sh",
-                "pretrained": "ResNet16 (32 units)",
-                "par_diam": particle_diameters[0],
-                "threshold": 1,
+                "blob_paths": blob_pattern,
+                "psize_A": cfg.pixel_size_A,
+                "accel_kv": cfg.accel_kv,
+                "cs_mm": cfg.cs_mm,
+                "total_dose_e_per_A2": resolved_dose,
             },
         )
-        topaz_job.queue(lane)
-        topaz_job.wait_for_done()
+        import_micrographs_job.queue(cfg.lane)
 
-        extract_job = workspace.create_job(
-            "extract_micrographs_cpu_parallel",
-            connections={
-                "micrographs": (topaz_job.uid, "micrographs"),
-                "particles": (topaz_job.uid, "particles"),
-            },
-            params={"box_size_pix": 384},
+        ctf_estimation_job = workspace.create_job(
+            "ctf_estimation",
+            connections={"exposures": (import_micrographs_job.uid, "imported_micrographs")},
+            params=cfg.ctf_estimation.model_dump(),
         )
-        extract_job.queue(lane)
-    else:
-        for par_diam in particle_diameters:
+        ctf_estimation_job.queue(cfg.lane)
+
+
+        # For a single particle diameter we can extract directly. For
+        # multiple diameters, particles are topaz-extracted per diameter;
+        # merging/dedup across diameters before extraction is not yet
+        # wired up here (mirrors the original pipeline).
+        if len(cfg.particle_diameters_A) == 1:
             topaz_job = workspace.create_job(
                 "topaz_extract",
-                connections={"micrographs": (curate_exposures_job.uid, "exposures_accepted")},
+                connections={"micrographs": (ctf_estimation_job.uid, "exposures_accepted")},
                 params={
-                    "exec_path": "/home/cryosparcuser/topaz.sh",
-                    "pretrained": "ResNet16 (32 units)",
-                    "par_diam": par_diam,
-                    "threshold": 1,
+                    "exec_path": cfg.topaz.exec_path,
+                    "pretrained": cfg.topaz.pretrained,
+                    "par_diam": cfg.particle_diameters_A[0],
+                    "threshold": cfg.topaz.threshold,
                 },
             )
-            topaz_job.queue(lane)
+            topaz_job.queue(cfg.lane)
             topaz_job.wait_for_done()
 
+            extract_job = workspace.create_job(
+                "extract_micrographs_cpu_parallel",
+                connections={
+                    "micrographs": (topaz_job.uid, "micrographs"),
+                    "particles": (topaz_job.uid, "particles"),
+                },
+                params={"box_size_pix": cfg.box_size_pix},
+            )
+            extract_job.queue(cfg.lane)
+        else:
+            for par_diam in cfg.particle_diameters_A:
+                topaz_job = workspace.create_job(
+                    "topaz_extract",
+                    connections={"micrographs": (ctf_estimation_job.uid, "exposures_accepted")},
+                    params={
+                        "exec_path": cfg.topaz.exec_path,
+                        "pretrained": cfg.topaz.pretrained,
+                        "par_diam": par_diam,
+                        "threshold": cfg.topaz.threshold,
+                    },
+                )
+                topaz_job.queue(cfg.lane)
+                topaz_job.wait_for_done()
 
-    ###
-    # extract_job = workspace.create_job(
-    #     "extract_micrographs_cpu_parallel",
-    #     connections={
-    #         "micrographs": (topaz_job_small.uid, "micrographs"),
-    #         "particles": (topaz_job_small.uid, "particles"),
-    #     },
-    #     params={"box_size_pix": 384},
-    # )
-    # extract_job.queue(lane)
+        print(f"Queued CryoSPARC import pipeline for {data_dir} (dose={resolved_dose})")
 
-    # downsample_job = workspace.create_job(
-    #     "downsample_particles",
-    #     connections={"particles": (extract_job.uid, "particles")},
-    #     params={"bin_size_pix": 160},
-    # )
-    # downsample_job.queue(lane)
 
-    ###
-    # het_refine_job = workspace.create_job(
-    #     "hetero_refine",
-    #     connections={
-    #         "particles": (downsample_job.uid, "particles"),
-    #         "volume": [(VOLUME_JOB, f"imported_volume_{v}") for v in range(1, 4 + 1)],
-    #     },
-    # )
-    # het_refine_job.queue(lane)
-    # het_refine_job.wait_for_done()
+def _load_mrc_dirs_and_dose_map(
+    mrc_dirs_file: Path, mrc_dose_map_file: Path
+) -> tuple[list[Path], dict[str, float]]:
+    mrc_dirs = [Path(line) for line in mrc_dirs_file.read_text().splitlines() if line.strip()]
 
-    # homo_refine_jobs = []
-    # for vol_num in range(0, 3 + 1):
-    #     homo_refine_job = workspace.create_job(
-    #         type="homo_refine_new",
-    #         connections={
-    #             "particles": (het_refine_job.uid, f"particles_class_{vol_num}"),
-    #             "volume": (het_refine_job.uid, f"volume_class_{vol_num}"),
-    #         },
-    #     )
-    #     homo_refine_job.connect_result(
-    #         target_input="particles",
-    #         connection_idx=0,
-    #         slot="blob",
-    #         source_job_uid=extract_job.uid,
-    #         source_output="particles",
-    #         source_result="blob",
-    #     )
-    #     homo_refine_job.queue("default")
-    #     homo_refine_jobs.append(homo_refine_job.uid)
+    dose_map: dict[str, float] = {}
+    if mrc_dose_map_file.exists():
+        raw_map = json.loads(mrc_dose_map_file.read_text())
+        for key, value in raw_map.items():
+            try:
+                dose_map[str(Path(key))] = float(value)
+            except (TypeError, ValueError):
+                continue
+    return mrc_dirs, dose_map
 
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Run CryoSPARC micrograph import and refinement pipeline."
+    )
+    parser.add_argument("--config", required=True, type=Path, help="Path to a YAML config.")
+    parser.add_argument(
+        "--mrc-dirs-file", type=Path, default=None, help="Override mrc-dirs-file from the config."
+    )
+    args = parser.parse_args()
+
+    raw = yaml.safe_load(args.config.read_text())
+    microscope = resolve_microscope_spec(raw["microscope"]) if "microscope" in raw else None
+    cfg = CryoSPARCImportConfig.model_validate(raw["cryosparc"])
+
+    mrc_dirs_file = args.mrc_dirs_file or cfg.mrc_dirs_file
+    mrc_dose_map_file = cfg.resolved_mrc_dose_map_file()
+    mrc_dirs, dose_map = _load_mrc_dirs_and_dose_map(mrc_dirs_file, mrc_dose_map_file)
+
+    run_import(cfg, microscope, mrc_dirs, dose_map)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,25 @@
+# Batch config for run_sim_parallel.py:
+#   python run_sim_parallel.py --config configs/test_run.yaml
+
+microscope: titan
+
+sample:
+  diameter: 910.0
+  thickness_center: 80.0
+  thickness_edge: 85.0
+
+mixture:
+  name: example_mixture
+  species:
+    - name: 6PXM
+      source: pdb          # looks for structures/6PXM.pdb unless `path:` is given
+      concentration: 400
+  noise:
+    enabled: true
+
+dose_values: [30.0]        # e/A^2
+num_micrographs: 1
+defocus:
+  type: list
+  values: [1.0]             # micrometers
+output_dir: data

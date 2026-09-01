@@ -1,0 +1,20 @@
+# Standalone config for cryosparc_run.py, e.g. to (re-)import an existing
+# mrc_dirs.txt / mrc_dirs_dose_map.json without re-running the simulation:
+#   python cryosparc_run.py --config configs/cryosparc_only.yaml
+#
+# `microscope:` is optional here -- it's only used to derive pixel_size_A /
+# accel_kv / cs_mm. Omit it and set those three fields explicitly under
+# `cryosparc:` if the micrographs didn't come from this pipeline.
+
+microscope: glacios
+
+cryosparc:
+  project: P8
+  workspace: W2
+  lane: default
+  dose_fallback: 30.0
+  particle_diameters_A: [130, 270]
+  box_size_pix: 384
+  mrc_dirs_file: mrc_dirs.txt
+  connection:
+    env_file: /home/lara/.env
