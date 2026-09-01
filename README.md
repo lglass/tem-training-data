@@ -1,5 +1,30 @@
 # Getting started
 
+## Structure concentrations
+
+Provide each structure with its TEM-simulator `particle_conc` value using
+`NAME:CONCENTRATION` entries separated by commas:
+
+```bash
+python input_generator.py \
+    --structures 7Q5Q:1200,7Q5R:1200,3JCT:400 \
+    --output-dir data \
+    --run-id example
+```
+
+Every structure must include a finite, non-negative concentration. Duplicate
+structure names and bare names such as `7Q5Q` are rejected.
+
+The parallel runner keeps these values alongside each structure:
+
+```python
+mixtures = [
+    ("7Q5Q", 1200),
+    ("7Q5R", 1200),
+    ("3JCT", 400),
+]
+```
+
 ## Install the Simulator
 Get simulation software and install
 

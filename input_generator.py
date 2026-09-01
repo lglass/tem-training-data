@@ -25,6 +25,12 @@ class ParticleSetDef:
     params: dict[str, object]
 
 
+@dataclass(frozen=True)
+class StructureDef:
+    name: str
+    concentration: float
+
+
 def _particle_definition_for_structure(structure: str) -> ParticleDef:
     map_re = Path(f"structures/{structure}_map.mrc")
     # map_im = Path(f"structures/{structure}_abs_map.mrc")
@@ -35,36 +41,35 @@ def _particle_definition_for_structure(structure: str) -> ParticleDef:
             "source": "map",
             "map_file_re_in": map_re,
             "use_imag_pot": "no",
-            "famp": 0.1,
+            "famp": 0.07,
         }
     else:
         params = {
             "source": "pdb",
             "pdb_file_in": pdb,
-            "voxel_size": 0.05,
+            "voxel_size": 0.1,
             "map_file_re_out": map_re,
             # "map_file_im_out": map_im,
             "use_imag_pot": "no",
-            "famp": 0.1,
+            "famp": 0.07,
         }
     return ParticleDef(name=structure, params=params)
 
 
 def _noise_particle_definition() -> ParticleDef:
     return ParticleDef(
-        name="marker",
+        name="background",
         params={
             "source": "random",
-            "smoothness": 0.1,
-            "contrast_re": 1,
+            "smoothness": 0.5,
+            "contrast_re": 1.5,
             "make_positive": "no",
-            "voxel_size": 0.2,
-            "nx": 10,
-            "ny": 10,
-            "nz": 10,
+            "voxel_size": 0.1,
+            "nx": 20,
+            "ny": 20,
+            "nz": 20,
             "use_imag_pot": "no",
-            "famp": 0.1,
-            "map_file_re_out": "structures/marker_map.mrc",
+            "famp": 0.07,
         },
     )
 
@@ -76,7 +81,7 @@ def _ice_crystal_definition() -> ParticleDef:
             "source": "map",
             "map_file_re_in": "structures/crystal_map.mrc",
             "use_imag_pot": "no",
-            "famp": 0.1,
+            "famp": 0.07,
         },
     )
 
@@ -96,29 +101,61 @@ def _write_input_file(
     out_path.write_text(text, encoding="ascii")
 
 
-def _parse_csv_str(csv: str) -> list[str]:
-    return [x.strip() for x in csv.split(",") if x.strip()]
+def _parse_structures(specification: str) -> list[StructureDef]:
+    structures: list[StructureDef] = []
+    seen_names: set[str] = set()
 
+    for entry in specification.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if ":" not in entry:
+            raise ValueError(
+                f"Invalid structure '{entry}'; use NAME:CONCENTRATION"
+            )
 
-def _parse_csv_float(csv: str) -> list[float]:
-    return [float(x.strip()) for x in csv.split(",") if x.strip()]
+        name, concentration_text = (part.strip() for part in entry.split(":", 1))
+        if not name:
+            raise ValueError("Structure name cannot be empty")
+        if not concentration_text:
+            raise ValueError(f"Missing concentration for structure '{name}'")
+        if name in seen_names:
+            raise ValueError(f"Duplicate structure '{name}'")
+
+        try:
+            concentration = float(concentration_text)
+        except ValueError as error:
+            raise ValueError(
+                f"Invalid concentration '{concentration_text}' for structure '{name}'"
+            ) from error
+        if not np.isfinite(concentration) or concentration < 0:
+            raise ValueError(
+                f"Concentration for structure '{name}' must be finite and non-negative"
+            )
+
+        structures.append(StructureDef(name=name, concentration=concentration))
+        seen_names.add(name)
+
+    if not structures:
+        raise ValueError("At least one structure with a concentration is required")
+    return structures
 
 
 # Microscope parameter set.
 MICROSCOPE_PRESETS: dict[str, dict[str, dict[str, object]]] = {
-    "300kV": {
+    "glacios": {
         "electronbeam": {
-            "acc_voltage": 300,
+            "acc_voltage": 200,
             "energy_spread": 0.3,
             "gen_dose": "yes",
         },
         "optics": {
-            "magnification": 191000.0,
+            "magnification": 89297.1,
             "cs": 2.7,
             "cc": 2.7,
             "aperture": 100,
             "focal_length": 3.4,
-            "cond_ap_angle": 0.01,
+            "cond_ap_angle": 0.05,
             "gen_defocus": "yes",
         },
         "detector": {
@@ -127,21 +164,21 @@ MICROSCOPE_PRESETS: dict[str, dict[str, dict[str, object]]] = {
             "pixel_size": 14,
             "gain": 1,
             "use_quantization": "yes",
-            "dqe": 0.9,
-            "mtf_a": 0.5,
-            "mtf_b": 0.5,
+            "dqe": 0.5,
+            "mtf_a": 0.7,
+            "mtf_b": 0.3,
             "mtf_c": 0.0,
-            "mtf_alpha": 7,
-            "mtf_beta": 20,
-            "mtf_p": 4,
-            "mtf_q": 2,
+            "mtf_alpha": 1,
+            "mtf_beta": 10,
+            "mtf_p": 1,
+            "mtf_q": 1,
         },
     },
 }
 
 
 def generate_input(args: argparse.Namespace) -> Path:
-    structures = _parse_csv_str(args.structures)
+    structures = _parse_structures(args.structures)
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -157,7 +194,7 @@ def generate_input(args: argparse.Namespace) -> Path:
 
     # 2) Build particle definitions.
     particle_defs: list[ParticleDef] = [
-        _particle_definition_for_structure(s) for s in structures
+        _particle_definition_for_structure(structure.name) for structure in structures
     ]
     if args.add_noise:
         particle_defs.append(_noise_particle_definition())
@@ -166,25 +203,24 @@ def generate_input(args: argparse.Namespace) -> Path:
     # 3) Build particlesets.
     particlesets: list[ParticleSetDef] = [
         ParticleSetDef(
-            particle_type=s,
+            particle_type=structure.name,
             params={
                 "particle_coords": "random",
                 "where": "volume",
-                # "num_particles": 100,
-                "particle_conc": 20000,  # particles per cubic micron
-                "coord_file_out": output_dir / f"coord_{run_id}_{s}.txt",
+                "particle_conc": structure.concentration,
+                "coord_file_out": output_dir / f"coord_{run_id}_{structure.name}.txt",
             },
         )
-        for s in structures
+        for structure in structures
     ]
     if args.add_noise:
         particlesets.append(
             ParticleSetDef(
-                particle_type="marker",
+                particle_type="background",
                 params={
                     "particle_coords": "random",
-                    "occupancy": "0.5",
-                    "where": "top",
+                    "occupancy": "0.25",
+                    "where": "volume",
                 },
             )
         )
@@ -200,33 +236,15 @@ def generate_input(args: argparse.Namespace) -> Path:
         )
 
     # 4) Microscope preset with run-specific overrides.
-    microscope = MICROSCOPE_PRESETS["300kV"]
+    microscope = MICROSCOPE_PRESETS["glacios"]
     electronbeam = dict(microscope["electronbeam"])
     electronbeam["total_dose"] = args.dose * 100  # e/A^2 -> e/nm^2
-    if args.energy_spread is not None:
-        electronbeam["energy_spread"] = args.energy_spread
-
+    
     optics = dict(microscope["optics"])
     optics["defocus_nominal"] = args.defocus
-    if args.con_ap_angle is not None:
-        optics["cond_ap_angle"] = args.con_ap_angle
-    if args.aperture is not None:
-        optics["aperture"] = args.aperture
 
     detector = dict(microscope["detector"])
     detector["image_file_out"] = image_file_out
-    if args.dqe is not None:
-        detector["dqe"] = args.dqe
-    if args.mtf_a is not None:
-        detector["mtf_a"] = args.mtf_a
-    if args.mtf_b is not None:
-        detector["mtf_b"] = args.mtf_b
-    if args.mtf_c is not None:
-        detector["mtf_c"] = args.mtf_c
-    if args.mtf_alpha is not None:
-        detector["mtf_alpha"] = args.mtf_alpha
-    if args.mtf_beta is not None:
-        detector["mtf_beta"] = args.mtf_beta
 
     # 5) Assemble input sections in readable order.
     sections: list[tuple[str, dict[str, object]]] = []
@@ -298,7 +316,12 @@ def main() -> None:
 
     # Particle definitions / particle sets
     parser.add_argument(
-        "--structures", default="4AAR,6PXM", help="Comma-separated structure names."
+        "--structures",
+        default="4AAR:400,6PXM:400",
+        help=(
+            "Comma-separated NAME:CONCENTRATION entries. Concentrations are "
+            "passed directly to TEM-simulator's particle_conc parameter."
+        ),
     )
 
     parser.add_argument(
@@ -308,51 +331,21 @@ def main() -> None:
     )
 
     # Sample geometry
-    parser.add_argument("--sample-diameter", type=float, default=430.0)
-    parser.add_argument("--thickness-center", type=float, default=50.0)
-    parser.add_argument("--thickness-edge", type=float, default=55.0)
+    parser.add_argument("--sample-diameter", type=float, default=910.0)
+    parser.add_argument("--thickness-center", type=float, default=80.0)
+    parser.add_argument("--thickness-edge", type=float, default=85.0)
 
     # Parameter set (preset) + run-specific overrides.
     parser.add_argument(
-        "--defocus", type=float, default=1.75, help="Defocus in micrometers."
+        "--defocus", type=float, default=1.0, help="Defocus in micrometers."
     )
-    parser.add_argument("--dose", type=float, default=45.0, help="Dose in e/A^2.")
-    parser.add_argument(
-        "--energy-spread",
-        type=float,
-        default=None,
-        help="Override electron beam energy spread.",
-    )
-    parser.add_argument(
-        "--con-ap-angle",
-        type=float,
-        default=None,
-        help="Override condenser aperture angle (cond_ap_angle).",
-    )
-    parser.add_argument(
-        "--aperture", type=float, default=None, help="Override objective aperture."
-    )
-    parser.add_argument(
-        "--dqe", type=float, default=None, help="Override detector DQE."
-    )
-    parser.add_argument(
-        "--mtf-a", type=float, default=None, help="Override detector mtf_a."
-    )
-    parser.add_argument(
-        "--mtf-b", type=float, default=None, help="Override detector mtf_b."
-    )
-    parser.add_argument(
-        "--mtf-c", type=float, default=None, help="Override detector mtf_c."
-    )
-    parser.add_argument(
-        "--mtf-alpha", type=float, default=None, help="Override detector mtf_alpha."
-    )
-    parser.add_argument(
-        "--mtf-beta", type=float, default=None, help="Override detector mtf_beta."
-    )
+    parser.add_argument("--dose", type=float, default=30.0, help="Dose in e/A^2.")
 
     args = parser.parse_args()
-    generate_input(args)
+    try:
+        generate_input(args)
+    except ValueError as error:
+        parser.error(str(error))
 
 
 if __name__ == "__main__":

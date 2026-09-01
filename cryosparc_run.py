@@ -9,7 +9,7 @@ from cryosparc.tools import CryoSPARC
 from cryosparc.util import first
 from dotenv import load_dotenv
 
-experiments_dir = Path("/mnt/data/lonp/")
+experiments_dir = Path("/mnt/data/lysate/")
 
 load_dotenv(".env")
 CRYOSPARC_LICENSE_ID = os.getenv("CRYOSPARC_LICENSE_ID")
@@ -18,8 +18,8 @@ CRYOSPARC_PASSWORD = os.getenv("CRYOSPARC_PASSWORD")
 CRYOSPARC_HOST = os.getenv("CRYOSPARC_HOST")
 CRYOSPARC_PORT = int(os.getenv("CRYOSPARC_PORT"))
 
-PROJECT = "P7"
-WORKSPACE = "W1"
+PROJECT = "P8"
+WORKSPACE = "W2"
 
 cs = CryoSPARC(
     host=CRYOSPARC_HOST,
@@ -42,7 +42,7 @@ def parse_args():
     parser.add_argument(
         "--dose",
         type=float,
-        default=60.0,
+        default=30.0,
         help="Fallback total electron dose in e/A^2 used for micrograph import.",
     )
     parser.add_argument(
@@ -110,8 +110,8 @@ for data_dir in data_dirs:
         "import_micrographs",
         params={
             "blob_paths": blob_pattern,
-            "psize_A": 0.73,
-            "accel_kv": 300,
+            "psize_A": 1.5678,
+            "accel_kv": 200,
             "cs_mm": 2.7,
             "total_dose_e_per_A2": resolved_dose,
         },
@@ -160,36 +160,66 @@ for data_dir in data_dirs:
     curate_exposures_job.interact("shutdown_interactive")
 
     ###
-    topaz_job = workspace.create_job(
-        "topaz_extract",
-        connections={"micrographs": (curate_exposures_job.uid, "exposures_accepted")},
-        params={
-            "exec_path": "/home/cryosparcuser/topaz.sh",
-            "pretrained": "ResNet16 (32 units)",
-            "par_diam": 150,
-            "threshold": 1,
-        },
-    )
-    topaz_job.queue(lane)
-    topaz_job.wait_for_done()
+    particle_diameters = [130, 270]  # in Angstroms
+
+    topaz_job_ids = []
+    # For one particle diameter, we can directly extract particles. For multiple diameters, we first merge the particles from different diameters and then extract them together, dropping duplicate particles.
+    if len(particle_diameters) == 1:
+        topaz_job = workspace.create_job(
+            "topaz_extract",
+            connections={"micrographs": (curate_exposures_job.uid, "exposures_accepted")},
+            params={
+                "exec_path": "/home/cryosparcuser/topaz.sh",
+                "pretrained": "ResNet16 (32 units)",
+                "par_diam": particle_diameters[0],
+                "threshold": 1,
+            },
+        )
+        topaz_job.queue(lane)
+        topaz_job.wait_for_done()
+
+        extract_job = workspace.create_job(
+            "extract_micrographs_cpu_parallel",
+            connections={
+                "micrographs": (topaz_job.uid, "micrographs"),
+                "particles": (topaz_job.uid, "particles"),
+            },
+            params={"box_size_pix": 384},
+        )
+        extract_job.queue(lane)
+    else:
+        for par_diam in particle_diameters:
+            topaz_job = workspace.create_job(
+                "topaz_extract",
+                connections={"micrographs": (curate_exposures_job.uid, "exposures_accepted")},
+                params={
+                    "exec_path": "/home/cryosparcuser/topaz.sh",
+                    "pretrained": "ResNet16 (32 units)",
+                    "par_diam": par_diam,
+                    "threshold": 1,
+                },
+            )
+            topaz_job.queue(lane)
+            topaz_job.wait_for_done()
+
 
     ###
-    extract_job = workspace.create_job(
-        "extract_micrographs_cpu_parallel",
-        connections={
-            "micrographs": (topaz_job.uid, "micrographs"),
-            "particles": (topaz_job.uid, "particles"),
-        },
-        params={"box_size_pix": 448},
-    )
-    extract_job.queue(lane)
+    # extract_job = workspace.create_job(
+    #     "extract_micrographs_cpu_parallel",
+    #     connections={
+    #         "micrographs": (topaz_job_small.uid, "micrographs"),
+    #         "particles": (topaz_job_small.uid, "particles"),
+    #     },
+    #     params={"box_size_pix": 384},
+    # )
+    # extract_job.queue(lane)
 
-    downsample_job = workspace.create_job(
-        "downsample_particles",
-        connections={"particles": (extract_job.uid, "particles")},
-        params={"bin_size_pix": 160},
-    )
-    downsample_job.queue(lane)
+    # downsample_job = workspace.create_job(
+    #     "downsample_particles",
+    #     connections={"particles": (extract_job.uid, "particles")},
+    #     params={"bin_size_pix": 160},
+    # )
+    # downsample_job.queue(lane)
 
     ###
     # het_refine_job = workspace.create_job(
@@ -222,17 +252,3 @@ for data_dir in data_dirs:
     #     homo_refine_job.queue("default")
     #     homo_refine_jobs.append(homo_refine_job.uid)
 
-    log_values = [
-        data_dir.as_posix(),
-        str(resolved_dose),
-        import_micrographs_job.uid,
-        ctf_estimation_job.uid,
-        curate_exposures_job.uid,
-        topaz_job.uid,
-        extract_job.uid,
-        # het_refine_job.uid,
-        # *homo_refine_jobs,
-    ]
-    log_line = "\t".join(log_values)
-    with open(log_file_path, "a") as log_file:
-        log_file.write(f"{log_line}\n")

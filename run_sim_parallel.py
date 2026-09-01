@@ -8,14 +8,14 @@ import time
 import uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, List
 
 import numpy as np
 
 
 class ExperimentConfig(NamedTuple):
-    species1: str
-    species2: str
+    name: str
+    species: list[tuple[str, float]]
     dose: float
     defocus: float
     micrograph_idx: int
@@ -28,23 +28,12 @@ def run_cmd(cmd: list[str], cwd: Path | None, quiet: bool = False) -> None:
     subprocess.run(cmd, cwd=cwd, check=True, stdout=stdout, stderr=stderr)
 
 
-def generate_mrc_dir(species1: str, species2: str) -> str:
-    """Generate mrc_dir name from species and concentrations.
-
-    Args:
-        species1, species2: Protein structure names
-        conc1, conc2: Concentration values
-
-    Returns:
-        Directory name like "6PXM-0.5_9T0K-0.5"
-    """
-    pairs = [f"{species1}-{0.5}", f"{species2}-{0.5}"]
-    pairs.sort()
-    return "_".join(pairs)
-
-
 def format_dose_dir(dose: float) -> str:
     return f"dose_{dose:.1f}"
+
+
+def format_structure_specs(species: list[tuple[str, float]]) -> str:
+    return ",".join(f"{name}:{concentration:g}" for name, concentration in species)
 
 
 def run_single_experiment(
@@ -54,10 +43,7 @@ def run_single_experiment(
 ) -> dict:
     try:
         # Generate output directory for this mixture
-        base_mrc_dir = output_dir / generate_mrc_dir(
-            config.species1,
-            config.species2,
-        )
+        base_mrc_dir = output_dir
         mrc_dir = base_mrc_dir / format_dose_dir(config.dose)
         mrc_dir.mkdir(parents=True, exist_ok=True)
 
@@ -69,7 +55,7 @@ def run_single_experiment(
             "python",
             "input_generator.py",
             "--structures",
-            f"{config.species1},{config.species2}",
+            format_structure_specs(config.species),
             "--defocus",
             str(config.defocus),
             "--dose",
@@ -123,7 +109,7 @@ def main():
     )
     parser.add_argument(
         "--output-dir",
-        default=datetime.date.today().strftime("/mnt/data/lonp/simulated_%Y%m%d"),
+        default=datetime.date.today().strftime("/mnt/data/lysate/simulated_%Y%m%d"),
         help="Base output directory for simulations.",
     )
     parser.add_argument(
@@ -133,22 +119,23 @@ def main():
     )
     parser.add_argument(
         "--dose-values",
-        default="60",
+        default="30",
         help="Comma-separated electron dose values in e/A^2.",
     )
     parser.add_argument(
         "--num-micrographs",
         type=int,
-        default=700,
+        default=1500,
         help="Number of micrographs to simulate.",
     )
     parser.add_argument(
-        "--defocus-range",
-        default="0.5,2.5",
+        "--defocus-experiment",
+        type=str,
+        default="defocus.npy",
         help="Min,max defocus in micrometers (drawn uniformly per micrograph).",
     )
     parser.add_argument(
-        "--max-workers", type=int, default=4, help="Number of parallel workers."
+        "--max-workers", type=int, default=8, help="Number of parallel workers."
     )
     parser.add_argument(
         "--mrc-dirs-file",
@@ -165,30 +152,39 @@ def main():
     input_dir.mkdir(parents=True, exist_ok=True)
 
     dose_values = [float(d) for d in args.dose_values.split(",")]
-    defocus_min, defocus_max = [float(d) for d in args.defocus_range.split(",")]
+    defocus_exp = np.load(args.defocus_experiment)
 
     rng = np.random.default_rng()
 
     mixtures = [
-        ("dimer", "hexamer"),
+        ("7Q5Q", 768),
+        ("7Q5R", 768),
+        ("7Q5S", 768),
+        ("3JCT", 256),
+        ("6ELZ", 256),
+        ("6EM5", 256),
+        ("1WCM", 90),
+        ("4CR2", 90),
+        ("4V88_copy1", 90),
+        ("5np0", 90),
+        ("9pmo", 90),
     ]
 
     experiments: list[ExperimentConfig] = []
-    for species1, species2 in mixtures:
-        for mic_idx in range(1, args.num_micrographs + 1):
-            for dose in dose_values:
-                defocus = rng.uniform(defocus_min, defocus_max)
-                run_id = uuid.uuid4().hex[:8]
-                experiments.append(
-                    ExperimentConfig(
-                        species1=species1,
-                        species2=species2,
-                        dose=dose,
-                        defocus=defocus,
-                        micrograph_idx=mic_idx,
-                        run_id=run_id,
-                    )
+    for mic_idx in range(1, args.num_micrographs + 1):
+        for dose in dose_values:
+            defocus = rng.choice(defocus_exp)
+            run_id = uuid.uuid4().hex[:8]
+            experiments.append(
+                ExperimentConfig(
+                    name="lysate_mixture",
+                    species=mixtures,
+                    dose=dose,
+                    defocus=defocus,
+                    micrograph_idx=mic_idx,
+                    run_id=run_id,
                 )
+            )
 
     print(f"Scheduled {len(experiments)} experiments")
     print(f"Using {args.max_workers} parallel workers")

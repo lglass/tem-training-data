@@ -10,7 +10,7 @@ from scipy.spatial import cKDTree
 
 from utils_cs import initialize_cryosparc, load_env_variables
 
-NONE_LABEL = 2  # Label for "Empty" particles (keep consistent with mapping)
+NONE_LABEL = 0  # Label for "Empty" particles (keep consistent with mapping)
 
 
 def get_mic_dir(project, job_id, param_name="blob_paths"):
@@ -169,9 +169,13 @@ def get_import_job(cryosparc: CryoSPARC, project, job_uid: str):
 
 def structure2label(training: pd.DataFrame):
     id2label = {
-        "dimer": 0,
-        "hexamer": 1,
         "Empty": NONE_LABEL,
+        "7Q5Q": 1,
+        "7Q5R": 2,
+        "7Q5S": 3,
+        "3JCT": 4,
+        "6ELZ": 5,
+        "6EM5": 6,
     }
 
     training["label"] = training["particle"].map(id2label).fillna(NONE_LABEL).astype(int)
