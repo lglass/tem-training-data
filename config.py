@@ -321,7 +321,7 @@ class CryoSPARCConnectionConfig(BaseModel):
     env_file: Path = Field(default_factory=lambda: Path.home() / ".env")
 
     def load(self) -> dict[str, str]:
-        load_dotenv(self.env_file)
+        load_dotenv(self.env_file.expanduser())
         keys = [
             "CRYOSPARC_LICENSE_ID",
             "CRYOSPARC_EMAIL",
@@ -423,6 +423,40 @@ class MergeParticlesConfig(CryoSPARCJobTargetConfig):
 def load_merge_particles_config(path: str | Path) -> MergeParticlesConfig:
     raw = yaml.safe_load(Path(path).read_text())
     return MergeParticlesConfig.model_validate(raw["merge_particles"])
+
+
+# --------------------------------------------------------------------------
+# Training data collection configuration (training_data.py)
+# --------------------------------------------------------------------------
+
+
+class TrainingDataConfig(CryoSPARCJobTargetConfig):
+    # CryoSPARC job type whose particle outputs get collected and labeled.
+    particle_job_type: str = "downsample_particles"
+
+    # Fractional-coordinate distance within which an extracted particle is
+    # matched to a ground-truth (txt2star.py) pick.
+    match_radius: float = 0.05
+    mic_dim: int = 4096
+
+    # Explicit structure-id -> integer class label. Kept in sync by hand with
+    # whatever mixture(s) were simulated; "Empty" (unmatched picks) is always 0.
+    label_map: dict[str, int] = Field(default_factory=lambda: {"Empty": 0})
+
+    output_csv: Path = Path("training.csv")
+    sample_size: int = 70000  # per-class cap, for class balance
+
+    @field_validator("label_map")
+    @classmethod
+    def _empty_is_zero(cls, label_map: dict[str, int]) -> dict[str, int]:
+        if label_map.get("Empty", 0) != 0:
+            raise ValueError("label_map['Empty'] must be 0")
+        return label_map
+
+
+def load_training_data_config(path: str | Path) -> TrainingDataConfig:
+    raw = yaml.safe_load(Path(path).read_text())
+    return TrainingDataConfig.model_validate(raw["training_data"])
 
 
 # --------------------------------------------------------------------------

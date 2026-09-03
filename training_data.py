@@ -1,3 +1,16 @@
+"""Collect and label training data from CryoSPARC particle-picking jobs.
+
+Walks every job of a given type (default: downsample_particles) in a
+project/workspace, matches each extracted particle back to the TEM-simulator
+ground truth (the .star files txt2star.py produces) by pick location, maps
+the matched structure id to an integer class label, and writes a
+class-balanced CSV.
+
+    python training_data.py --config configs/training_data.yaml
+"""
+
+from __future__ import annotations
+
 import argparse
 from pathlib import Path
 from typing import Optional, Union
@@ -8,9 +21,9 @@ import starfile
 from cryosparc.tools import CryoSPARC
 from scipy.spatial import cKDTree
 
-from utils_cs import initialize_cryosparc, load_env_variables
+from config import TrainingDataConfig, load_training_data_config
 
-NONE_LABEL = 0  # Label for "Empty" particles (keep consistent with mapping)
+NONE_LABEL = 0  # Label for "Empty" particles (keep consistent with label_map)
 
 
 def get_mic_dir(project, job_id, param_name="blob_paths"):
@@ -167,32 +180,17 @@ def get_import_job(cryosparc: CryoSPARC, project, job_uid: str):
     return None
 
 
-def structure2label(training: pd.DataFrame):
-    id2label = {
-        "Empty": NONE_LABEL,
-        "7Q5Q": 1,
-        "7Q5R": 2,
-        "7Q5S": 3,
-        "3JCT": 4,
-        "6ELZ": 5,
-        "6EM5": 6,
-    }
-
-    training["label"] = training["particle"].map(id2label).fillna(NONE_LABEL).astype(int)
+def structure2label(training: pd.DataFrame, label_map: dict[str, int]) -> pd.DataFrame:
+    training["label"] = training["particle"].map(label_map).fillna(NONE_LABEL).astype(int)
     return training
 
 
-def main(args):
-
-    cs = initialize_cryosparc(load_env_variables(".env"))
-
-    project = cs.find_project(args.project_id)
+def collect_training_data(cs: CryoSPARC, cfg: TrainingDataConfig) -> pd.DataFrame:
+    project = cs.find_project(cfg.project)
     training_data = []
 
-    # Simulated
-
     for job_id in get_jobs_with_particles(
-        cs, args.project_id, args.workspace_id, job_type="downsample_particles"
+        cs, cfg.project, cfg.workspace, job_type=cfg.particle_job_type
     ):
         import_job_id = get_import_job(cs, project, job_id)
         print(f"Found job with particles: {job_id}, import job: {import_job_id}")
@@ -206,52 +204,68 @@ def main(args):
         # Assign structure and view labels based on coordinates
         # and map those to the final class labels
         particles_df_labeled = assign_all_labels(
-            particles_df, mrc_dir=mic_dir, radius=0.05, mic_dim=4096
+            particles_df, mrc_dir=mic_dir, radius=cfg.match_radius, mic_dim=cfg.mic_dim
         )
         training_data.append(particles_df_labeled)
 
     print(f"Simulated data collected: {len(training_data)} particle sets")
 
     # Combine all labeled data into a single DataFrame
-    training_data = pd.concat(training_data, ignore_index=True)
-
-    return training_data
+    return pd.concat(training_data, ignore_index=True)
 
 
-if __name__ == "__main__":
+def connect(cfg: TrainingDataConfig) -> CryoSPARC:
+    creds = cfg.connection.load()
+    cs = CryoSPARC(
+        host=creds["CRYOSPARC_HOST"],
+        base_port=int(creds["CRYOSPARC_PORT"]),
+        license=creds["CRYOSPARC_LICENSE_ID"],
+        email=creds["CRYOSPARC_EMAIL"],
+        password=creds["CRYOSPARC_PASSWORD"],
+    )
+    if not cs.test_connection():
+        raise RuntimeError("Could not connect to CryoSPARC")
+    return cs
 
+
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Collect training data from CryoSPARC project"
     )
+    parser.add_argument("--config", required=True, type=Path, help="Path to a YAML config.")
     parser.add_argument(
-        "--project-id",
-        default="P4",
-        help="CryoSPARC project ID to collect data from.",
-    )
-    parser.add_argument(
-        "--workspace-id",
-        default="W4",
-        help="CryoSPARC workspace ID to collect data from.",
-    )
-    parser.add_argument(
-        "--output", default="training.csv", help="Output CSV file for training data."
+        "--output", type=Path, default=None, help="Override output_csv from the config."
     )
     parser.add_argument(
         "--sample-size",
         type=int,
-        default=70000,
-        help="Number of samples per class to keep.",
+        default=None,
+        help="Override sample_size (per-class cap) from the config.",
     )
-
     args = parser.parse_args()
 
-    training_data = main(args)
+    cfg = load_training_data_config(args.config)
+    overrides = {
+        key: value
+        for key, value in (("output_csv", args.output), ("sample_size", args.sample_size))
+        if value is not None
+    }
+    if overrides:
+        cfg = cfg.model_copy(update=overrides)
 
-    training_data = structure2label(training_data)
+    cs = connect(cfg)
+
+    training_data = collect_training_data(cs, cfg)
+    training_data = structure2label(training_data, cfg.label_map)
 
     training_data = (
         training_data.groupby("label", group_keys=False)
-        .apply(lambda x: x.sample(min(len(x), args.sample_size)))
+        .apply(lambda x: x.sample(min(len(x), cfg.sample_size)))
         .sort_index()
     )
-    training_data.to_csv(args.output, index=False)
+    training_data.to_csv(cfg.output_csv, index=False)
+    print(f"Wrote {len(training_data)} rows to {cfg.output_csv}")
+
+
+if __name__ == "__main__":
+    main()

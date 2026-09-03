@@ -1,0 +1,29 @@
+# Config for training_data.py:
+#   python training_data.py --config configs/training_data.yaml
+#
+# Collects particles from every `particle_job_type` job in project/workspace,
+# matches each one back to the TEM-simulator ground truth (.star files from
+# txt2star.py) by pick location within `match_radius`, and labels it using
+# `label_map`. Unmatched picks are labeled "Empty" -> 0.
+#
+# label_map is kept in sync by hand with whatever mixture(s) were simulated
+# into this project -- update it if the mixture's species change.
+
+training_data:
+  project: P4
+  workspace: W4
+  particle_job_type: downsample_particles
+  match_radius: 0.05
+  mic_dim: 4096
+  label_map:
+    Empty: 0
+    7Q5Q: 1
+    7Q5R: 2
+    7Q5S: 3
+    3JCT: 4
+    6ELZ: 5
+    6EM5: 6
+  output_csv: training.csv
+  sample_size: 70000
+  connection:
+    env_file: ~/.env
