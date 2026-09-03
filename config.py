@@ -338,6 +338,17 @@ class CryoSPARCConnectionConfig(BaseModel):
         return values
 
 
+class CryoSPARCJobTargetConfig(BaseModel):
+    """Shared connection/project/workspace/lane fields for anything that
+    talks to a CryoSPARC project (import pipeline, merge/dedup, training
+    data collection)."""
+
+    connection: CryoSPARCConnectionConfig = Field(default_factory=CryoSPARCConnectionConfig)
+    project: str
+    workspace: str
+    lane: str = "default"
+
+
 class CTFEstimationConfig(BaseModel):
     astigmatism_known: bool = True
     spectrum_dim: int = 1024
@@ -356,12 +367,7 @@ class TopazConfig(BaseModel):
     threshold: float = 1.0
 
 
-class CryoSPARCImportConfig(BaseModel):
-    connection: CryoSPARCConnectionConfig = Field(default_factory=CryoSPARCConnectionConfig)
-    project: str
-    workspace: str
-    lane: str = "default"
-
+class CryoSPARCImportConfig(CryoSPARCJobTargetConfig):
     # Derived automatically from the microscope config when left unset; set
     # explicitly only when importing micrographs that came from elsewhere.
     pixel_size_A: float | None = None
@@ -393,6 +399,30 @@ class CryoSPARCImportConfig(BaseModel):
         if data["cs_mm"] is None:
             data["cs_mm"] = microscope.optics.cs
         return CryoSPARCImportConfig.model_validate(data)
+
+
+# --------------------------------------------------------------------------
+# Particle merge/dedup configuration (merge_particles.py)
+# --------------------------------------------------------------------------
+
+
+class MergeParticlesConfig(CryoSPARCJobTargetConfig):
+    # Priority order: the first dataset a given (micrograph, x, y) key is
+    # seen in wins the dedup. May be overridden from the CLI.
+    job_ids: list[str] = Field(default_factory=list)
+    output_name: str = "particles"
+    dedup_keys: list[str] = Field(
+        default_factory=lambda: [
+            "location/micrograph_uid",
+            "location/center_x_frac",
+            "location/center_y_frac",
+        ]
+    )
+
+
+def load_merge_particles_config(path: str | Path) -> MergeParticlesConfig:
+    raw = yaml.safe_load(Path(path).read_text())
+    return MergeParticlesConfig.model_validate(raw["merge_particles"])
 
 
 # --------------------------------------------------------------------------

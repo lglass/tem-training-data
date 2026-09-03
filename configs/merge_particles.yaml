@@ -1,0 +1,16 @@
+# Config for merge_particles.py:
+#   python merge_particles.py --config configs/merge_particles.yaml
+#
+# Merges particle picks from multiple CryoSPARC jobs (e.g. topaz_extract runs
+# at different particle diameters), deduplicating by pick location so the
+# same physical particle isn't kept from more than one job. `job_ids` are in
+# priority order -- the first dataset a given location is seen in wins.
+
+merge_particles:
+  project: P8
+  workspace: W2
+  lane: default
+  output_name: particles
+  job_ids: [J10, J11, J12]
+  connection:
+    env_file: ~/.env

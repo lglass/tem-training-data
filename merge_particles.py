@@ -1,37 +1,26 @@
+"""Merge particle picks from multiple CryoSPARC jobs, deduplicating by pick
+location.
+
+Typical use: several topaz_extract/extract_micrographs jobs were run at
+different particle diameters (see cryosparc_run.run_import's multi-diameter
+branch, which does not merge across diameters), and a single, deduplicated
+particle set is needed for downstream processing.
+
+    python merge_particles.py --config configs/merge_particles.yaml
+    python merge_particles.py --config configs/merge_particles.yaml J10 J11 J12
+"""
+
+from __future__ import annotations
+
 import argparse
 from pathlib import Path
 
-from utils_cs import initialize_cryosparc, load_env_variables
+from cryosparc.tools import CryoSPARC
 
-PROJECT = "P8"
-LANE = "default"
-PROJECT_DIR = Path("/mnt/data/CS-empiar-10892/")
-PARTICLE_OUTPUT = "particles"
-DEDUP_KEYS = [
-    "location/micrograph_uid",
-    "location/center_x_frac",
-    "location/center_y_frac",
-]
+from config import MergeParticlesConfig, load_merge_particles_config
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Merge particle datasets from CryoSPARC jobs."
-    )
-    parser.add_argument(
-        "job_ids",
-        nargs="+",
-        help="CryoSPARC job ids to merge, in priority order.",
-    )
-    parser.add_argument(
-        "--output-name",
-        default="particles",
-        help="Name of the external result to create.",
-    )
-    return parser.parse_args()
-
-
-def load_particle_dataset(project, job_id, output_name=PARTICLE_OUTPUT):
+def load_particle_dataset(project, job_id, output_name="particles"):
     return project.find_job(job_id).load_output(output_name)
 
 
@@ -64,27 +53,60 @@ def merge_particle_datasets(datasets, dedup_keys):
     return merged_particles
 
 
-def main():
-    args = parse_args()
+def run_merge(cfg: MergeParticlesConfig, job_ids: list[str]) -> str:
+    if not job_ids:
+        raise ValueError("No job ids provided (set `job_ids` in the config or pass them on the CLI).")
 
-    cs = initialize_cryosparc(load_env_variables("/home/lara/.env"))
-    project = cs.find_project(PROJECT)
-    workspace = project.find_workspace("W2")
+    creds = cfg.connection.load()
+    cs = CryoSPARC(
+        host=creds["CRYOSPARC_HOST"],
+        base_port=int(creds["CRYOSPARC_PORT"]),
+        license=creds["CRYOSPARC_LICENSE_ID"],
+        email=creds["CRYOSPARC_EMAIL"],
+        password=creds["CRYOSPARC_PASSWORD"],
+    )
+    if not cs.test_connection():
+        raise RuntimeError("Could not connect to CryoSPARC")
+
+    project = cs.find_project(cfg.project)
+    workspace = project.find_workspace(cfg.workspace)
 
     particle_sets = [
-        load_particle_dataset(project, job_id, output_name=PARTICLE_OUTPUT)
-        for job_id in args.job_ids
+        load_particle_dataset(project, job_id, output_name="particles") for job_id in job_ids
     ]
-    merged_particles = merge_particle_datasets(particle_sets, DEDUP_KEYS)
+    merged_particles = merge_particle_datasets(particle_sets, cfg.dedup_keys)
 
-    job_id = project.save_external_result(
+    return project.save_external_result(
         workspace_uid=workspace.uid,
         dataset=merged_particles,
         type="particle",
-        name=args.output_name,
+        name=cfg.output_name,
     )
 
-    print(f"Saved merged particle dataset as external result {job_id}")
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Merge particle datasets from CryoSPARC jobs, deduplicating by pick location."
+    )
+    parser.add_argument("--config", required=True, type=Path, help="Path to a YAML config.")
+    parser.add_argument(
+        "job_ids",
+        nargs="*",
+        help="CryoSPARC job ids to merge, in priority order. Overrides `job_ids` in the config.",
+    )
+    parser.add_argument(
+        "--output-name", default=None, help="Override output_name from the config."
+    )
+    args = parser.parse_args()
+
+    cfg = load_merge_particles_config(args.config)
+    if args.output_name is not None:
+        cfg = cfg.model_copy(update={"output_name": args.output_name})
+
+    job_ids = args.job_ids or cfg.job_ids
+
+    result_id = run_merge(cfg, job_ids)
+    print(f"Saved merged particle dataset as external result {result_id}")
 
 
 if __name__ == "__main__":
