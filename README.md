@@ -43,7 +43,7 @@ pip install mrcfile starfile scipy cryosparc-tools python-dotenv tifffile torch 
 
 # Running TEM-simulator / CryoSPARC pipeline
 
-Three scripts sharing one YAML-based configuration model (`config.py`):
+Five scripts sharing one YAML-based configuration model (`config.py`):
 
 - `input_generator.py` — writes a single TEM-simulator input file.
 - `run_sim_parallel.py` — runs a batch of simulations in parallel, then
@@ -51,10 +51,18 @@ Three scripts sharing one YAML-based configuration model (`config.py`):
 - `cryosparc_run.py` — imports micrographs into CryoSPARC and runs
   import → CTF estimation → topaz extraction. Usable standalone or
   chained automatically from `run_sim_parallel.py`.
+- `merge_particles.py` — merges particle picks from multiple CryoSPARC jobs
+  (e.g. topaz extractions run at different particle diameters), deduplicating
+  by pick location. Run by hand after `cryosparc_run.py`'s picking jobs when
+  more than one `particle_diameters_A` value was used.
+- `training_data.py` — collects extracted particles back out of CryoSPARC,
+  labels each one against the TEM-simulator ground truth (the `.star` files
+  `txt2star.py` produces) by pick location, and writes a class-balanced CSV
+  for training a classifier.
 
-
-See `configs/example_run.yaml`, `configs/lysate_batch.yaml` and
-`configs/cryosparc_only.yaml` for complete examples.
+See `configs/example_run.yaml`, `configs/lysate_batch.yaml`,
+`configs/cryosparc_only.yaml`, `configs/merge_particles.yaml` and
+`configs/training_data.yaml` for complete examples.
 
 ## Microscope presets
 
@@ -123,6 +131,38 @@ simulation. `microscope:` is optional here; if omitted, set `pixel_size_A`,
 Connection credentials are not stored in the YAML — they're loaded from
 an env file (`cryosparc.connection.env_file`, default `~/.env`) containing
 `CRYOSPARC_LICENSE_ID`, `CRYOSPARC_EMAIL`, `CRYOSPARC_PASSWORD`,
-`CRYOSPARC_HOST`, `CRYOSPARC_PORT`.
+`CRYOSPARC_HOST`, `CRYOSPARC_PORT`. The other CryoSPARC-facing scripts below
+(`merge_particles.py`, `training_data.py`) load credentials the same way,
+via their own `connection:` section.
+
+## Merging particle picks
+
+```
+python merge_particles.py --config configs/merge_particles.yaml
+```
+
+Deduplicates particle picks from the CryoSPARC jobs listed in `job_ids`
+(priority order — the first job a given pick location is seen in wins),
+and saves the merged set back into the workspace as an external result.
+Pass job ids on the command line to override `job_ids` from the config,
+e.g. `python merge_particles.py --config configs/merge_particles.yaml J10 J11 J12`.
+
+Needed when `cryosparc_run.py` was run with more than one
+`particle_diameters_A` value — each diameter gets its own topaz/extraction
+jobs, and picks aren't merged across diameters automatically.
+
+## Collecting training data
+
+```
+python training_data.py --config configs/training_data.yaml
+```
+
+Walks every `particle_job_type` job (default `downsample_particles`) in
+`project`/`workspace`, matches each extracted particle to the TEM-simulator
+ground truth by pick location (within `match_radius`, fractional
+coordinates), and labels it via `label_map` (unmatched picks are `"Empty"` →
+`0`). `label_map` isn't derived automatically — keep it in sync by hand with
+whatever mixture(s) were simulated into the project. Output is capped at
+`sample_size` rows per class for balance and written to `output_csv`.
 
 

@@ -1,0 +1,10 @@
+.env*
+cs*.txt
+mrc_dirs*
+data/
+input_files/
+runs/
+structures*
+__pycache__/
+*.csv
+archive/
