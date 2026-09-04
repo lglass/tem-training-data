@@ -26,7 +26,7 @@ from typing import Annotated, Literal
 import numpy as np
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, BeforeValidator, Field, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
 MICROSCOPES_FILE = Path(__file__).parent / "microscopes.yaml"
 
@@ -457,6 +457,35 @@ class TrainingDataConfig(CryoSPARCJobTargetConfig):
 def load_training_data_config(path: str | Path) -> TrainingDataConfig:
     raw = yaml.safe_load(Path(path).read_text())
     return TrainingDataConfig.model_validate(raw["training_data"])
+
+
+# --------------------------------------------------------------------------
+# Experimental data collection configuration (experiment_training.py)
+# --------------------------------------------------------------------------
+
+
+class ExperimentalParticleJobConfig(BaseModel):
+    """A single CryoSPARC job whose particles are all one known species,
+    e.g. a topaz_extract run targeted at one protein on experimental
+    (non-simulated) micrographs. Unlike training_data.py's per-particle
+    ground-truth matching, every particle pulled from the job gets this
+    job's configured label."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    job_uid: str = Field(alias="jobid")
+    label: int
+    name: str
+
+
+class ExperimentalDataConfig(CryoSPARCJobTargetConfig):
+    particles: list[ExperimentalParticleJobConfig]
+    output_csv: Path = Path("training_exp.csv")
+
+
+def load_exp_data_config(path: str | Path) -> ExperimentalDataConfig:
+    raw = yaml.safe_load(Path(path).read_text())
+    return ExperimentalDataConfig.model_validate(raw["experiment_data"])
 
 
 # --------------------------------------------------------------------------

@@ -1,0 +1,22 @@
+# Config for experiment_training.py:
+#   python experiment_training.py --config configs/experiment_data.yaml
+#
+# Collects particles from experimental (non-simulated) CryoSPARC jobs. Each
+# entry in `particles` names one job (`jobid`) whose particles are all a
+# single known species -- every particle pulled from that job is labeled
+# with the given `label`/`name`. There is no per-particle ground-truth
+# matching here (contrast with training_data.py); keep `label` in sync by
+# hand with whatever label_map training_data.py uses, if the two are meant
+# to be combined.
+
+experiment_data:
+  project: P8
+  workspace: W1
+  particles:
+    - {jobid: J117,       label: 1, name: fas}
+    - {jobid: J118,       label: 2, name: ogdhc}
+    - {jobid: J119,       label: 3, name: pdhc}
+    - {jobid: J120,       label: 4, name: ribosome}
+  output_csv: training_exp.csv
+  connection:
+    env_file: ~/.env
