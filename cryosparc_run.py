@@ -112,7 +112,7 @@ def run_import(
         if len(cfg.particle_diameters_A) == 1:
             topaz_job = workspace.create_job(
                 "topaz_extract",
-                connections={"micrographs": (ctf_estimation_job.uid, "exposures_accepted")},
+                connections={"micrographs": (ctf_estimation_job.uid, "exposures_success")},
                 params={
                     "exec_path": cfg.topaz.exec_path,
                     "pretrained": cfg.topaz.pretrained,
@@ -136,7 +136,7 @@ def run_import(
             for par_diam in cfg.particle_diameters_A:
                 topaz_job = workspace.create_job(
                     "topaz_extract",
-                    connections={"micrographs": (ctf_estimation_job.uid, "exposures_accepted")},
+                    connections={"micrographs": (ctf_estimation_job.uid, "exposures_success")},
                     params={
                         "exec_path": cfg.topaz.exec_path,
                         "pretrained": cfg.topaz.pretrained,
