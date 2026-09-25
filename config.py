@@ -31,18 +31,25 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_valida
 MICROSCOPES_FILE = Path(__file__).parent / "microscopes.yaml"
 
 
+class _StrictModel(BaseModel):
+    """Base for all config models: reject unknown keys instead of silently
+    ignoring them (e.g. a mistyped or wrong-script field in a YAML file)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
 # --------------------------------------------------------------------------
 # Microscope / detector configuration
 # --------------------------------------------------------------------------
 
 
-class ElectronBeamConfig(BaseModel):
+class ElectronBeamConfig(_StrictModel):
     acc_voltage: float
     energy_spread: float
     gen_dose: Literal["yes", "no"] = "yes"
 
 
-class OpticsConfig(BaseModel):
+class OpticsConfig(_StrictModel):
     magnification: float
     cs: float
     cc: float
@@ -52,7 +59,7 @@ class OpticsConfig(BaseModel):
     gen_defocus: Literal["yes", "no"] = "yes"
 
 
-class DetectorConfig(BaseModel):
+class DetectorConfig(_StrictModel):
     det_pix_x: int
     det_pix_y: int
     pixel_size: float  # micrometers, physical detector pixel pitch
@@ -68,7 +75,7 @@ class DetectorConfig(BaseModel):
     mtf_q: int
 
 
-class MicroscopeConfig(BaseModel):
+class MicroscopeConfig(_StrictModel):
     name: str
     electronbeam: ElectronBeamConfig
     optics: OpticsConfig
@@ -148,7 +155,7 @@ MicroscopeField = Annotated[MicroscopeConfig, BeforeValidator(resolve_microscope
 # --------------------------------------------------------------------------
 
 
-class SampleGeometryConfig(BaseModel):
+class SampleGeometryConfig(_StrictModel):
     diameter: float = 910.0
     thickness_center: float = 80.0
     thickness_edge: float = 85.0
@@ -164,7 +171,7 @@ class SpeciesSource(str, Enum):
     PDB = "pdb"
 
 
-class SpeciesConfig(BaseModel):
+class SpeciesConfig(_StrictModel):
     name: str
     source: SpeciesSource
     concentration: float = Field(ge=0)
@@ -199,7 +206,7 @@ class SpeciesConfig(BaseModel):
         }
 
 
-class NoiseConfig(BaseModel):
+class NoiseConfig(_StrictModel):
     """Fixed background noise particle + surface ice crystal, both optional."""
 
     enabled: bool = False
@@ -236,7 +243,7 @@ class NoiseConfig(BaseModel):
         }
 
 
-class MixtureConfig(BaseModel):
+class MixtureConfig(_StrictModel):
     name: str = "mixture"
     species: list[SpeciesConfig]
     noise: NoiseConfig = Field(default_factory=NoiseConfig)
@@ -257,7 +264,7 @@ class MixtureConfig(BaseModel):
 # --------------------------------------------------------------------------
 
 
-class SimulationConfig(BaseModel):
+class SimulationConfig(_StrictModel):
     microscope: MicroscopeField
     sample: SampleGeometryConfig = Field(default_factory=SampleGeometryConfig)
     mixture: MixtureConfig
@@ -284,7 +291,7 @@ class DefocusSourceType(str, Enum):
     NPY = "npy"
 
 
-class DefocusSource(BaseModel):
+class DefocusSource(_StrictModel):
     type: DefocusSourceType
     min: float | None = None
     max: float | None = None
@@ -317,7 +324,7 @@ class DefocusSource(BaseModel):
 # --------------------------------------------------------------------------
 
 
-class CryoSPARCConnectionConfig(BaseModel):
+class CryoSPARCConnectionConfig(_StrictModel):
     env_file: Path = Field(default_factory=lambda: Path.home() / ".env")
 
     def load(self) -> dict[str, str]:
@@ -338,7 +345,7 @@ class CryoSPARCConnectionConfig(BaseModel):
         return values
 
 
-class CryoSPARCJobTargetConfig(BaseModel):
+class CryoSPARCJobTargetConfig(_StrictModel):
     """Shared connection/project/workspace/lane fields for anything that
     talks to a CryoSPARC project (import pipeline, merge/dedup, training
     data collection)."""
@@ -349,7 +356,7 @@ class CryoSPARCJobTargetConfig(BaseModel):
     lane: str = "default"
 
 
-class CTFEstimationConfig(BaseModel):
+class CTFEstimationConfig(_StrictModel):
     astigmatism_known: bool = True
     spectrum_dim: int = 1024
     min_res_A: float = 30
@@ -361,7 +368,7 @@ class CTFEstimationConfig(BaseModel):
     slow: bool = False
 
 
-class TopazConfig(BaseModel):
+class TopazConfig(_StrictModel):
     exec_path: str = "/home/cryosparcuser/topaz.sh"
     pretrained: str = "ResNet16 (32 units)"
     threshold: float = 1.0
@@ -464,7 +471,7 @@ def load_training_data_config(path: str | Path) -> TrainingDataConfig:
 # --------------------------------------------------------------------------
 
 
-class ExperimentalParticleJobConfig(BaseModel):
+class ExperimentalParticleJobConfig(_StrictModel):
     """A single CryoSPARC job whose particles are all one known species,
     e.g. a topaz_extract run targeted at one protein on experimental
     (non-simulated) micrographs. Unlike training_data.py's per-particle
@@ -493,7 +500,7 @@ def load_exp_data_config(path: str | Path) -> ExperimentalDataConfig:
 # --------------------------------------------------------------------------
 
 
-class ParallelSimulationConfig(BaseModel):
+class ParallelSimulationConfig(_StrictModel):
     microscope: MicroscopeField
     sample: SampleGeometryConfig = Field(default_factory=SampleGeometryConfig)
     mixture: MixtureConfig
