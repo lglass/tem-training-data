@@ -453,13 +453,6 @@ class TrainingDataConfig(CryoSPARCJobTargetConfig):
     output_csv: Path = Path("training.csv")
     sample_size: int = 70000  # per-class cap, for class balance
 
-    @field_validator("label_map")
-    @classmethod
-    def _empty_is_zero(cls, label_map: dict[str, int]) -> dict[str, int]:
-        if label_map.get("Empty", 0) != 0:
-            raise ValueError("label_map['Empty'] must be 0")
-        return label_map
-
 
 def load_training_data_config(path: str | Path) -> TrainingDataConfig:
     raw = yaml.safe_load(Path(path).read_text())
