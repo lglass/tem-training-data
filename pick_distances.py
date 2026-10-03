@@ -1,12 +1,20 @@
+#!/usr/bin/env python3
 """Distance from every CryoSPARC pick to the nearest simulated (ground-truth) particle.
 
 Reads
   * a CryoSPARC particle .cs file (numpy structured array; needs location/* fields), and
   * the TEM-simulator ground-truth coord_<micid>_<species>.star files (searched recursively),
 and reports, per pick, the distance (in Angstrom) to the nearest ground-truth particle, its
-species and Euler angles, and the distance/species of the second nearest. It then tabulates how
-the labelling radius (a fraction of the micrograph width, as in training_data.py) changes the
-species counts, and how many picks are ambiguous (nearest of the other species is also in range).
+species and Euler angles, and the distance to the nearest particle of any OTHER species. It then
+tabulates how the labelling radius (a fraction of the micrograph width, as in training_data.py)
+changes the species counts, and how many picks are ambiguous (a particle of another species is
+closer than --ambiguity-radius-A). It writes labels.csv with one label per pick: the species,
+'Empty' (no particle within --radius), 'Ambiguous' (dropped), or 'NoGT' (no star file found for
+that micrograph at all).
+
+The actual per-pick labelling rule lives in labeling.py (label_picks), shared with
+training_data.py so the two can't drift apart; this script is just a CryoSPARC-free offline
+diagnostic/validation harness around it.
 
 Optional: --refine-cs <cs with alignments3D/shift> joins by uid and plots |refined shift| against
 the pick-to-nearest-particle distance (sign-agnostic: magnitudes only).
@@ -24,7 +32,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.spatial import cKDTree
+
+import labeling
 
 
 def read_star(path: Path) -> pd.DataFrame:
@@ -63,96 +72,140 @@ def decode(a) -> str:
     return a.decode() if isinstance(a, bytes) else str(a)
 
 
+def load_job(cs_path: Path, star_root: Path, mic_dim: int = 4096, max_picks: int | None = None):
+    """Load a CryoSPARC particle .cs file plus its matching ground-truth star files.
+
+    Returns (picks_df, mic_ids, a_per_frac, star_idx):
+      - picks_df: the raw .cs structured array wrapped minimally (just what callers need: uid,
+        center_x_frac, center_y_frac -- kept as the original numpy structured array for simplicity)
+      - mic_ids: (n,) array of micrograph ids, one per pick
+      - a_per_frac: (n,) Angstrom per unit fractional coordinate, one per pick
+      - star_idx: dict mic_id -> list of star file paths (from index_star_files)
+    """
+    cs = np.load(cs_path, allow_pickle=False)
+    if max_picks and len(cs) > max_picks:
+        cs = cs[np.random.default_rng(0).choice(len(cs), max_picks, replace=False)]
+
+    a_per_frac = labeling.angstrom_per_frac(cs["location/micrograph_shape"], cs["location/micrograph_psize_A"])
+    mic_ids = np.array([Path(decode(p)).stem.rsplit("_", 1)[-1] for p in cs["location/micrograph_path"]])
+    star_idx = index_star_files(star_root)
+    return cs, mic_ids, a_per_frac, star_idx
+
+
+def label_all(
+    picks_df,
+    mic_ids: np.ndarray,
+    a_per_frac: np.ndarray,
+    star_idx: dict[str, list[Path]],
+    match_radius_A: float,
+    ambiguity_radius_A: float,
+    mic_dim: int = 4096,
+) -> pd.DataFrame:
+    """Label every pick in picks_df against its micrograph's ground truth, via labeling.label_picks."""
+    cs = picks_df
+    n = len(cs)
+    pick_frac = np.stack([cs["location/center_x_frac"], cs["location/center_y_frac"]], axis=1).astype(float)
+
+    out = {
+        "label": np.full(n, labeling.NO_GT, dtype=object),
+        "species_nearest": np.full(n, labeling.NO_GT, dtype=object),
+        "dist_A": np.full(n, np.nan), "dist_other_A": np.full(n, np.nan),
+        "rot": np.full(n, np.nan), "tilt": np.full(n, np.nan), "psi": np.full(n, np.nan),
+        "dx_A": np.full(n, np.nan), "dy_A": np.full(n, np.nan),
+    }
+
+    for mic in np.unique(mic_ids):
+        sel = np.where(mic_ids == mic)[0]
+        paths = star_idx.get(mic)
+        gt = None
+        if paths:
+            star_df = pd.concat([read_star(p) for p in paths], ignore_index=True)
+            gt = labeling.GroundTruth.from_coords(
+                star_df["rlnCoordinateX"].to_numpy(), star_df["rlnCoordinateY"].to_numpy(),
+                star_df["rlnStructure"].to_numpy(),
+                star_df["rlnAngleRot"].to_numpy(), star_df["rlnAngleTilt"].to_numpy(), star_df["rlnAnglePsi"].to_numpy(),
+                mic_dim,
+            )
+
+        result = labeling.label_picks(
+            pick_frac[sel, 0], pick_frac[sel, 1], gt, a_per_frac=a_per_frac[sel[0]],
+            match_radius_A=match_radius_A, ambiguity_radius_A=ambiguity_radius_A,
+        )
+        out["label"][sel] = result.label
+        out["species_nearest"][sel] = result.species_nearest
+        out["dist_A"][sel] = result.dist_A
+        out["dist_other_A"][sel] = result.dist_other_A
+        out["rot"][sel] = result.rot
+        out["tilt"][sel] = result.tilt
+        out["psi"][sel] = result.psi
+        out["dx_A"][sel] = result.dx_A
+        out["dy_A"][sel] = result.dy_A
+
+    return pd.DataFrame({"uid": cs["uid"], "mic_id": mic_ids, **out})
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cs", required=True, type=Path)
     ap.add_argument("--star-root", required=True, type=Path)
     ap.add_argument("--mic-dim", type=int, default=4096, help="simulated micrograph size in px (as in training_data.py)")
     ap.add_argument("--radii", type=float, nargs="+", default=[0.005, 0.01, 0.02, 0.05],
-                    help="labelling radii as fractions of the micrograph width")
+                    help="labelling radii as fractions of the micrograph width, for the sweep table")
+    ap.add_argument("--radius", type=float, default=0.01, help="labelling radius (fraction of micrograph width) for labels.csv")
+    ap.add_argument("--ambiguity-radius-A", type=float, default=None,
+                    help="a pick is ambiguous if a particle of another species is closer than this (A); default: the labelling radius in A")
     ap.add_argument("--out", type=Path, default=Path("pick_distances_out"))
     ap.add_argument("--refine-cs", type=Path, default=None)
     ap.add_argument("--max-picks", type=int, default=None, help="subsample for a quick test")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
 
-    cs = np.load(args.cs, allow_pickle=False)
-    if args.max_picks and len(cs) > args.max_picks:
-        cs = cs[np.random.default_rng(0).choice(len(cs), args.max_picks, replace=False)]
+    cs, mic_ids, a_per_frac, star_idx = load_job(args.cs, args.star_root, mic_dim=args.mic_dim, max_picks=args.max_picks)
     print(f"{len(cs)} picks in {args.cs}")
-
-    shape = cs["location/micrograph_shape"]
-    psize = cs["location/micrograph_psize_A"].astype(float)
-    if not np.all(shape[:, 0] == shape[:, 1]):
-        raise SystemExit("non-square micrographs: fractional distance is not isotropic; extend the script")
-    a_per_frac = shape[:, 1].astype(float) * psize  # Angstrom per unit of fractional coordinate
-    print(f"micrograph {shape[0].tolist()} px at {psize[0]:.4f} A/px -> {a_per_frac[0]:.1f} A per unit fraction;"
+    print(f"micrograph at {a_per_frac[0] / args.mic_dim:.4f} A/px -> {a_per_frac[0]:.1f} A per unit fraction;"
           f" radius 0.01 = {0.01 * a_per_frac[0]:.1f} A, 0.05 = {0.05 * a_per_frac[0]:.1f} A")
-
-    pick_frac = np.stack([cs["location/center_x_frac"], cs["location/center_y_frac"]], axis=1).astype(float)
-    mic_ids = np.array([Path(decode(p)).stem.rsplit("_", 1)[-1] for p in cs["location/micrograph_path"]])
-
-    star_idx = index_star_files(args.star_root)
     n_multi = sum(len({q.parent for q in v}) > 1 for v in star_idx.values())
     print(f"{len(star_idx)} micrograph ids with star files under {args.star_root}"
           f" ({n_multi} appear in more than one directory)")
 
-    n = len(cs)
-    out = {
-        "dist_A": np.full(n, np.nan), "species1": np.full(n, "NoGT", dtype=object),
-        "dist2_A": np.full(n, np.nan), "species2": np.full(n, "", dtype=object),
-        "rot": np.full(n, np.nan), "tilt": np.full(n, np.nan), "psi": np.full(n, np.nan),
-        "dx_A": np.full(n, np.nan), "dy_A": np.full(n, np.nan),
-    }
-    for mic in np.unique(mic_ids):
-        sel = np.where(mic_ids == mic)[0]
-        paths = star_idx.get(mic)
-        if not paths:
-            continue
-        gt = pd.concat([read_star(p) for p in paths], ignore_index=True)
-        gt = gt[gt["rlnCoordinateX"].between(0, args.mic_dim) & gt["rlnCoordinateY"].between(0, args.mic_dim)]
-        gt = gt.reset_index(drop=True)
-        if len(gt) == 0:
-            continue
-        gt_frac = gt[["rlnCoordinateX", "rlnCoordinateY"]].to_numpy() / args.mic_dim
-        tree = cKDTree(gt_frac)
-        k = min(2, len(gt))
-        d, i = tree.query(pick_frac[sel], k=k)
-        d = d.reshape(len(sel), k)
-        i = i.reshape(len(sel), k)
-        scale = a_per_frac[sel]
-        out["dist_A"][sel] = d[:, 0] * scale
-        out["species1"][sel] = gt["rlnStructure"].to_numpy()[i[:, 0]]
-        out["rot"][sel] = gt["rlnAngleRot"].to_numpy()[i[:, 0]]
-        out["tilt"][sel] = gt["rlnAngleTilt"].to_numpy()[i[:, 0]]
-        out["psi"][sel] = gt["rlnAnglePsi"].to_numpy()[i[:, 0]]
-        out["dx_A"][sel] = (gt_frac[i[:, 0], 0] - pick_frac[sel, 0]) * scale
-        out["dy_A"][sel] = (gt_frac[i[:, 0], 1] - pick_frac[sel, 1]) * scale
-        if k == 2:
-            out["dist2_A"][sel] = d[:, 1] * scale
-            out["species2"][sel] = gt["rlnStructure"].to_numpy()[i[:, 1]]
-
-    df = pd.DataFrame({"uid": cs["uid"], "mic_id": mic_ids, **out})
+    # --- full per-pick distances at a (near-)zero match radius: nearest particle regardless of hit ---
+    df = label_all(cs, mic_ids, a_per_frac, star_idx, match_radius_A=np.inf, ambiguity_radius_A=0.0, mic_dim=args.mic_dim)
+    df = df.rename(columns={"label": "species1"})  # at match_radius_A=inf, label == species_nearest except for NoGT
     df.to_csv(args.out / "pick_distances.csv", index=False)
     print(f"wrote {args.out / 'pick_distances.csv'}")
 
     # --- label counts and ambiguity as a function of the radius -------------------------------
     rows = []
     for r in args.radii:
-        rA = r * a_per_frac
+        rA = r * a_per_frac[0]
         hit = df["dist_A"].to_numpy() < rA
-        lab = np.where(hit, df["species1"], "Empty")
-        # ambiguous: the second-nearest particle is of the other species and also within r
-        amb = hit & (df["dist2_A"].to_numpy() < rA) & (df["species1"] != df["species2"])
-        rows.append({"radius_frac": r, "radius_A": rA[0],
-                     **{s: int((lab == s).sum()) for s in sorted(set(df["species1"]) - {"NoGT"})},
-                     "Empty": int((lab == "Empty").sum()), "NoGT": int((df["species1"] == "NoGT").sum()),
+        lab = np.where(hit, df["species_nearest"], "Empty")
+        amb = hit & (df["dist_other_A"].to_numpy() < rA)
+        rows.append({"radius_frac": r, "radius_A": rA,
+                     **{s: int((lab == s).sum()) for s in sorted(set(df["species_nearest"]) - {"NoGT"})},
+                     "Empty": int((lab == "Empty").sum()), "NoGT": int((df["species_nearest"] == "NoGT").sum()),
                      "ambiguous": int(amb.sum())})
     tab = pd.DataFrame(rows)
     print(tab.to_string(index=False))
     tab.to_csv(args.out / "label_counts_by_radius.csv", index=False)
+
+    # --- final labels: radius, minus ambiguous picks --------------------------------------------
+    rA = args.radius * a_per_frac[0]
+    ambiguity_radius_A = args.ambiguity_radius_A if args.ambiguity_radius_A is not None else rA
+    lab_df = label_all(cs, mic_ids, a_per_frac, star_idx, match_radius_A=rA, ambiguity_radius_A=ambiguity_radius_A,
+                        mic_dim=args.mic_dim)[["uid", "mic_id", "label"]]
+    fn = args.out / f"labels_r{args.radius}_other{ambiguity_radius_A:.0f}A.csv"
+    lab_df.to_csv(fn, index=False)
+    print(f"\nradius {args.radius} ({rA:.1f} A), ambiguous if another species is closer than {ambiguity_radius_A:.1f} A:")
+    print(lab_df["label"].value_counts().to_string())
+    print(f"wrote {fn}")
+    print("\nkept picks if the other-species distance must exceed (A), at radius", args.radius)
+    hit = df["dist_A"].to_numpy() < rA
+    sweep = {om: {s_: int(((df["species_nearest"] == s_) & hit & (df["dist_other_A"] >= om)).sum())
+                  for s_ in sorted(set(df['species_nearest']) - {'NoGT'})} for om in (0, 15, 30, 45, 60, 90)}
+    print(pd.DataFrame(sweep).T.rename_axis("other_min_A").to_string())
     print("\nnearest-particle distance (A), percentiles by nearest species:")
-    print(df.groupby("species1")["dist_A"].describe(percentiles=[0.5, 0.75, 0.9, 0.95, 0.99]).round(1).to_string())
+    print(df.groupby("species_nearest")["dist_A"].describe(percentiles=[0.5, 0.75, 0.9, 0.95, 0.99]).round(1).to_string())
 
     # --- plots ----------------------------------------------------------------------------------
     try:
@@ -166,7 +219,7 @@ def main() -> None:
     fig, ax = plt.subplots(figsize=(7, 4))
     top = np.nanpercentile(df["dist_A"], 99.5)
     bins = np.linspace(0, top, 120)
-    for s, g in df.groupby("species1"):
+    for s, g in df.groupby("species_nearest"):
         if s != "NoGT":
             ax.hist(g["dist_A"].dropna(), bins=bins, histtype="step", label=s)
     for r in args.radii:
@@ -185,7 +238,7 @@ def main() -> None:
         shift_A = np.linalg.norm(rf["alignments3D/shift"], axis=1) * rf["alignments3D/psize_A"]
         m = df.merge(pd.DataFrame({"uid": rf["uid"], "shift_A": shift_A}), on="uid")
         fig, ax = plt.subplots(figsize=(5.5, 5))
-        for s, g in m.groupby("species1"):
+        for s, g in m.groupby("species_nearest"):
             if s != "NoGT":
                 ax.scatter(g["dist_A"], g["shift_A"], s=3, alpha=0.3, label=s)
         lim = float(np.nanmax(m[["dist_A", "shift_A"]].to_numpy()))

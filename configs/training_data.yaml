@@ -3,17 +3,26 @@
 #
 # Collects particles from every `particle_job_type` job in project/workspace,
 # matches each one back to the TEM-simulator ground truth (.star files from
-# txt2star.py) by pick location within `match_radius`, and labels it using
-# `label_map`. Unmatched picks are labeled "Empty" -> 0.
+# txt2star.py) by pick location within `match_radius`/`match_radius_A`, and
+# labels it using `label_map`. A pick with no particle within the match
+# radius is "Empty"; one with a particle of another species also within
+# `ambiguity_radius_A` is "Ambiguous"; one on a micrograph with no ground
+# truth at all is "NoGT".
 #
 # label_map is kept in sync by hand with whatever mixture(s) were simulated
-# into this project -- update it if the mixture's species change.
+# into this project -- update it if the mixture's species change. Empty,
+# Ambiguous and NoGT are always required.
+#
+# This project's pixel size is unknown, so match_radius stays a fraction of
+# micrograph width (deprecated, converted to Angstrom at run time) rather
+# than being hand-converted to match_radius_A like configs/lonp_training*.yaml.
 
 training_data:
   project: P4
   workspace: W4
   particle_job_type: downsample_particles
   match_radius: 0.05
+  ambiguity_radius_A: 60.0  # REVIEW: untuned for this dataset
   mic_dim: 4096
   label_map:
     Empty: 0
@@ -23,6 +32,8 @@ training_data:
     3JCT: 4
     6ELZ: 5
     6EM5: 6
+    Ambiguous: 7
+    NoGT: 8
   output_csv: training.csv
   sample_size: 70000
   connection:

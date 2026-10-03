@@ -58,7 +58,12 @@ Five scripts sharing one YAML-based configuration model (`config.py`):
 - `training_data.py` — collects extracted particles back out of CryoSPARC,
   labels each one against the TEM-simulator ground truth (the `.star` files
   `txt2star.py` produces) by pick location, and writes a class-balanced CSV
-  for training a classifier.
+  for training a classifier. Labels are the matched species, `Empty` (no
+  ground-truth particle within `match_radius_A`, in Angstrom), `Ambiguous`
+  (a particle of another species also within `ambiguity_radius_A`), or
+  `NoGT` (no ground truth at all for that micrograph) — see `labeling.py`,
+  shared with the offline diagnostic `pick_distances.py`. `--dry-run` prints
+  label counts without writing the CSV.
 
 See `configs/example_run.yaml`, `configs/lysate_batch.yaml`,
 `configs/cryosparc_only.yaml`, `configs/merge_particles.yaml` and

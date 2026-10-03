@@ -441,17 +441,50 @@ class TrainingDataConfig(CryoSPARCJobTargetConfig):
     # CryoSPARC job type whose particle outputs get collected and labeled.
     particle_job_type: str = "downsample_particles"
 
-    # Fractional-coordinate distance within which an extracted particle is
-    # matched to a ground-truth (txt2star.py) pick.
-    match_radius: float = 0.05
+    # Distance within which an extracted particle is matched to a
+    # ground-truth (txt2star.py) pick. Set exactly one of these:
+    #   match_radius_A   preferred: Angstrom, portable across pixel sizes.
+    #   match_radius     deprecated: a fraction of the micrograph width;
+    #                     converted to Angstrom at run time using each job's
+    #                     own pixel size, with a warning.
+    match_radius: float | None = None
+    match_radius_A: float | None = None
+
+    # A matched pick is labeled "Ambiguous" instead of its nearest species if
+    # a particle of a *different* species is also within this distance (A).
+    ambiguity_radius_A: float = 60.0
+
     mic_dim: int = 4096
 
     # Explicit structure-id -> integer class label. Kept in sync by hand with
-    # whatever mixture(s) were simulated; "Empty" (unmatched picks) is always 0.
-    label_map: dict[str, int] = Field(default_factory=lambda: {"Empty": 0})
+    # whatever mixture(s) were simulated. "Empty" (no particle within
+    # match_radius), "Ambiguous" (another species also within
+    # ambiguity_radius_A) and "NoGT" (no ground truth for the micrograph at
+    # all) are sentinel labels independent of the simulated species, and are
+    # always required.
+    label_map: dict[str, int] = Field(
+        default_factory=lambda: {"Empty": 0, "Ambiguous": 1, "NoGT": 2}
+    )
 
     output_csv: Path = Path("training.csv")
     sample_size: int = 70000  # per-class cap, for class balance
+
+    @model_validator(mode="after")
+    def _validate_match_radius(self) -> "TrainingDataConfig":
+        if (self.match_radius is None) == (self.match_radius_A is None):
+            raise ValueError(
+                "set exactly one of 'match_radius' (deprecated, fraction of micrograph "
+                "width) or 'match_radius_A' (preferred, Angstrom)"
+            )
+        return self
+
+    @field_validator("label_map")
+    @classmethod
+    def _require_sentinel_labels(cls, label_map: dict[str, int]) -> dict[str, int]:
+        missing = {"Empty", "Ambiguous", "NoGT"} - label_map.keys()
+        if missing:
+            raise ValueError(f"label_map is missing required sentinel labels: {sorted(missing)}")
+        return label_map
 
 
 def load_training_data_config(path: str | Path) -> TrainingDataConfig:
