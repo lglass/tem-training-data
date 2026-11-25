@@ -170,4 +170,6 @@ coordinates), and labels it via `label_map` (unmatched picks are `"Empty"` →
 whatever mixture(s) were simulated into the project. Output is capped at
 `sample_size` rows per class for balance and written to `output_csv`.
 
+# References
 
+Glass, L., Abrahams, J. P., & Braun, T. (2026). CryoConvNeXt enables robust identification of low-abundance molecular species in experimental cryo-EM data. bioRxiv. [https://doi.org/10.64898/2026.09.08.750038](https://doi.org/10.64898/2026.09.08.750038)
